@@ -12,9 +12,291 @@ from data_provider.uea import subsample, interpolate_missing, Normalizer
 from sktime.datasets import load_from_tsfile_to_dataframe
 import warnings
 from utils.augmentation import run_augmentation_single
+import logging
 
 warnings.filterwarnings('ignore')
 
+# # 水下外骨骼数据DataLoader
+class UnderWaterLoader(Dataset):
+    def __init__(self, args, root_path, flag='train', size=None,
+                 features='MS', data_path='underwater.csv',
+                 target=None, scale=False, timeenc=0, freq='L', 
+                 data_stride=20,seasonal_patterns=None):  # <--- 这里设置为 20，表示采样间隔
+        
+        self.args = args
+        self.data_stride = data_stride 
+
+        # 这里的 seq_len 指的是“模型最终看到的点数”
+        # 比如 96。实际物理跨度 = 96 * 20 * 0.001s = 1.92s
+        if size == None:
+            self.seq_len = 96
+            self.label_len = 48
+            self.pred_len = 48
+        else:
+            self.seq_len = size[0]
+            self.label_len = size[1]
+            self.pred_len = size[2]
+
+        # 初始化参数...
+        self.features = features
+        self.target = target
+        self.scale = scale
+        self.timeenc = timeenc
+        self.freq = freq  # 时间频率
+        self.root_path = root_path
+        self.data_path = data_path
+        
+        # 映射 flag
+        assert flag in ['train', 'test', 'val']
+        type_map = {'train': 0, 'val': 1, 'test': 2}
+        self.set_type = type_map[flag]
+        
+        self.__read_data__()
+
+    def __read_data__(self):
+        self.scaler_x = StandardScaler()
+        self.scaler_y = StandardScaler()
+        
+        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+
+        # ========================================================
+        #  修改点 1： 绝对不要在这里进行 iloc 下采样！
+        #  我们要保留完整的 1000Hz 数据
+        # ========================================================
+        # (原先的 df_raw.iloc[::self.data_stride] 被删除了)
+        
+        cols = list(df_raw.columns)
+        if 'date' in cols:
+            cols.remove('date')
+        
+        label_cols = cols[-2:] 
+        feature_cols = cols[:-2] 
+        #label_cols = cols[-10:-1] 
+        #feature_cols = cols[-10:-1] 
+
+        # 计算切分边界
+        num_train = int(len(df_raw) * 0.7)
+        num_test = int(len(df_raw) * 0.2)
+        num_vali = len(df_raw) - num_train - num_test
+        
+        # 计算实际需要的物理长度 (Raw Points)
+        # 因为我们要间隔取样，所以需要的原始数据长度是 seq_len * stride
+        # 比如需要取96个点，间隔20，那实际需要在原始数据上跨越 96*20 = 1920 个点
+        self.raw_seq_len = self.seq_len * self.data_stride
+        self.raw_label_len = self.label_len * self.data_stride
+        self.raw_pred_len = self.pred_len * self.data_stride
+        
+        # [训练集起点, 验证集起点, 测试集起点]
+        border1s = [0, num_train - self.raw_seq_len, len(df_raw) - num_test - self.raw_seq_len]
+        # [训练集终点, 验证集终点, 测试集终点]
+        border2s = [num_train, num_train + num_vali, len(df_raw)]
+
+        #print("border1s:",border1s)
+        #print("border2s:",border2s)
+
+        border1 = border1s[self.set_type]
+        border2 = border2s[self.set_type]
+
+        df_data_x = df_raw[feature_cols]
+        df_data_y = df_raw[label_cols]
+
+        # 归一化
+        if self.scale:
+            train_data_x = df_data_x[border1s[0]:border2s[0]]
+            train_data_y = df_data_y[border1s[0]:border2s[0]]
+            self.scaler_x.fit(train_data_x.values)
+            self.scaler_y.fit(train_data_y.values)
+            data_x = self.scaler_x.transform(df_data_x.values)
+            data_y = self.scaler_y.transform(df_data_y.values)
+        else:
+            data_x = df_data_x.values
+            data_y = df_data_y.values
+
+        # 时间戳处理 (保留原始精度)
+        df_stamp = df_raw[['date']][border1:border2]
+        df_stamp['date'] = pd.to_datetime(df_stamp.date)
+        print(df_stamp.head(1000))
+
+        logging.debug(f'------self.timeenc: {self.timeenc}')
+        if self.timeenc == 0:
+            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
+            df_stamp['minute'] = df_stamp.date.apply(lambda row: row.minute, 1)
+            df_stamp['second'] = df_stamp.date.apply(lambda row: row.second, 1)
+            df_stamp['millis'] = df_stamp.date.apply(lambda row: row.microsecond // 1000, 1)
+            
+            temp_df = df_stamp.drop(['date'], axis=1)
+            temp_df.to_csv("data_stamp.txt", index=False, sep=',')
+            print(f">>> 时间戳特征已保存至: {os.path.abspath('data_stamp.txt')}")
+            data_stamp = df_stamp.drop(['date'], 1).values
+            
+        elif self.timeenc == 1:
+            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
+            data_stamp = data_stamp.transpose(1, 0)
+            np.savetxt("data_stamp.txt", data_stamp, delimiter=',', fmt='%.6f')
+        
+        self.data_x = data_x[border1:border2]
+        self.data_y = data_y[border1:border2]
+        self.data_stamp = data_stamp
+       
+        logging.debug(f'---------data_stamp shape: {data_stamp.shape}')
+
+    def __getitem__(self, index):
+        # ========================================================
+        #  修改点 2： 在这里进行“空洞采样” (Dilated slicing)
+        # ========================================================
+        
+        # 1. 确定原始数据的起始点
+        # index 是每一个 0.001s 的步进，保证所有数据都能被遍历到
+        s_begin = index
+        s_end = s_begin + self.raw_seq_len # raw_seq_len = 96 * 20
+        
+        r_begin = s_end - self.raw_label_len
+        r_end = r_begin + self.raw_label_len + self.raw_pred_len
+
+        # 2. 使用 [::self.data_stride] 进行间隔取样
+        # 原始数据切片: [s_begin : s_end] -> 长度 1920
+        # 间隔取样后: [::20] -> 长度 96 (符合模型输入)
+        seq_x = self.data_x[s_begin : s_end : self.data_stride]
+        seq_y = self.data_y[r_begin : r_end : self.data_stride]
+        logging.debug(f'seq_x shape: {seq_x.shape}, seq_y shape: {seq_y.shape}')
+        
+        seq_x_mark = self.data_stamp[s_begin : s_end : self.data_stride]
+        seq_y_mark = self.data_stamp[r_begin : r_end : self.data_stride]
+
+        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        
+
+    def __len__(self):
+        # 长度计算使用 raw 长度，因为我们是在原始数据上滑动的
+        return len(self.data_x) - self.raw_seq_len - self.raw_pred_len + 1
+
+
+
+class UnderWater_drop(Dataset):
+    def __init__(self, args, root_path, flag='train', size=None,
+                 features='MS', data_path='underwater.csv',
+                 target=None, scale=True, timeenc=0, freq='L', 
+                 data_stride=1):  # <--- 新增参数：采样间隔
+        
+        self.args = args
+        self.data_stride = data_stride # 保存间隔变量
+
+        # ... (seq_len 初始化逻辑同前，不再重复) ...
+        if size == None:
+            # 注意：如果 stride=20，这里的 96 代表实际时间 96*20*0.001 = 1.92s
+            self.seq_len = 96
+            self.label_len = 48
+            self.pred_len = 48
+        else:
+            self.seq_len = size[0]
+            self.label_len = size[1]
+            self.pred_len = size[2]
+
+        self.features = features
+        self.target = target
+        self.scale = scale
+        self.timeenc = timeenc
+        self.freq = freq
+        self.root_path = root_path
+        self.data_path = data_path
+        
+        # ... (assert flag 等逻辑同前) ...
+        type_map = {'train': 0, 'val': 1, 'test': 2}
+        self.set_type = type_map[flag]
+        
+        self.__read_data__()
+
+    def __read_data__(self):
+        self.scaler_x = StandardScaler()
+        self.scaler_y = StandardScaler()
+        
+        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+
+        # ========================================================
+        #  修改点：数据降采样 (Downsampling)
+        # ========================================================
+        if self.data_stride > 1:
+            # 每隔 data_stride 行取一行
+            # 例如：0, 20, 40, 60...
+            df_raw = df_raw.iloc[::self.data_stride, :].reset_index(drop=True)
+        # ========================================================
+
+        # ... (后续的列识别、数据切分、归一化逻辑完全不用变) ...
+        # 代码会自动适应变短了的 df_raw
+
+        cols = list(df_raw.columns)
+        if 'date' in cols:
+            cols.remove('date')
+        
+        # 假设最后2列是标签，前8列是特征
+        label_cols = cols[-2:] 
+        feature_cols = cols[-10:-2] 
+
+        num_train = int(len(df_raw) * 0.7)
+        num_test = int(len(df_raw) * 0.2)
+        num_vali = len(df_raw) - num_train - num_test
+        
+        border1s = [0, num_train - self.seq_len, len(df_raw) - num_test - self.seq_len]
+        border2s = [num_train, num_train + num_vali, len(df_raw)]
+        border1 = border1s[self.set_type]
+        border2 = border2s[self.set_type]
+
+        df_data_x = df_raw[feature_cols]
+        df_data_y = df_raw[label_cols]
+
+        if self.scale:
+            train_data_x = df_data_x[border1s[0]:border2s[0]]
+            train_data_y = df_data_y[border1s[0]:border2s[0]]
+            self.scaler_x.fit(train_data_x.values)
+            self.scaler_y.fit(train_data_y.values)
+            data_x = self.scaler_x.transform(df_data_x.values)
+            data_y = self.scaler_y.transform(df_data_y.values)
+        else:
+            data_x = df_data_x.values
+            data_y = df_data_y.values
+
+        # 时间戳处理也需要跟随 df_raw 变短，因为上面已经对 df_raw 进行了 iloc 切片，
+        # 所以这里的 df_stamp 自动就是降采样后的时间，逻辑是自洽的。
+        df_stamp = df_raw[['date']][border1:border2]
+        df_stamp['date'] = pd.to_datetime(df_stamp.date)
+
+        # 毫秒特征提取 (Time Embedding)
+        if self.timeenc == 0:
+            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
+            df_stamp['minute'] = df_stamp.date.apply(lambda row: row.minute, 1)
+            df_stamp['second'] = df_stamp.date.apply(lambda row: row.second, 1)
+            # 这里的毫秒特征会反映出降采样的结果，比如 0, 20, 40...
+            df_stamp['millis'] = df_stamp.date.apply(lambda row: row.microsecond // 1000, 1)
+            data_stamp = df_stamp.drop(['date'], 1).values
+        elif self.timeenc == 1:
+            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
+            data_stamp = data_stamp.transpose(1, 0)
+
+        self.data_x = data_x[border1:border2]
+        self.data_y = data_y[border1:border2]
+        self.data_stamp = data_stamp
+
+    def __getitem__(self, index):
+        # 这里的逻辑不需要变，因为 data_x 已经是稀疏化之后的数据了
+        s_begin = index
+        s_end = s_begin + self.seq_len
+        r_begin = s_end - self.label_len
+        r_end = r_begin + self.label_len + self.pred_len
+
+        seq_x = self.data_x[s_begin:s_end]
+        seq_y = self.data_y[r_begin:r_end]
+        seq_x_mark = self.data_stamp[s_begin:s_end]
+        seq_y_mark = self.data_stamp[r_begin:r_end]
+
+        return seq_x, seq_y, seq_x_mark, seq_y_mark
+
+# class UnderWater(Dataset):
+#     def __init__(self,args, root_path, flag='train',size=None,
+#                  features='S', data_path='ETTh1.csv',
+#                  target='OT', scale=True, timeenc=0):
+#         self.args = args
+
+#         if size == None:
 
 class Dataset_ETT_hour(Dataset):
     def __init__(self, args, root_path, flag='train', size=None,
@@ -746,3 +1028,163 @@ class UEAloader(Dataset):
 
     def __len__(self):
         return len(self.all_IDs)
+
+
+class Dataset_OwnCSV(Dataset):
+    """
+    CSV 格式自有数据集加载器。
+
+    假定 CSV 文件包含时间列（可选名为 'date'），输入特征列（8 维），以及标签列（2 维）。
+    主要目标：返回与项目其余 Dataset 兼容的四元组：
+        seq_x: (seq_len, input_dim=8)
+        seq_y: (label_len + pred_len, label_dim=2)
+        seq_x_mark: (seq_len, time_feat_dim) or zeros
+        seq_y_mark: (label_len + pred_len, time_feat_dim) or zeros
+
+    参数示例：
+        Dataset_OwnCSV(args, root_path='data/', file_path='my.csv', feature_cols=['f1',...,'f8'],
+                      label_cols=['y1','y2'], size=[seq_len,label_len,pred_len], flag='train')
+    """
+
+    def __init__(self, args, root_path, file_path,
+                 flag='train', size=None,
+                 feature_cols=None, label_cols=None,
+                 date_col='date', scale=True, timeenc=0, freq='h'):
+        self.args = args
+        if size is None:
+            # 默认值：你可以根据需要修改
+            self.seq_len = 96
+            self.label_len = 48
+            self.pred_len = 48
+        else:
+            self.seq_len, self.label_len, self.pred_len = size
+
+        assert flag in ['train', 'val', 'test']
+        type_map = {'train': 0, 'val': 1, 'test': 2}
+        self.set_type = type_map[flag]
+
+        self.root_path = root_path
+        self.file_path = file_path
+        self.feature_cols = feature_cols
+        self.label_cols = label_cols
+        self.date_col = date_col
+        self.scale = scale
+        self.timeenc = timeenc
+        self.freq = freq
+
+        # scalers：分别对特征与标签做缩放（可选）
+        self.scaler_x = StandardScaler()
+        self.scaler_y = StandardScaler()
+
+        self.__read_data__()
+
+    def __read_data__(self):
+        df = pd.read_csv(os.path.join(self.root_path, self.file_path))
+
+        # 如果未显式给出列名，默认：最后 2 列为标签，前 8 列为特征（排除 date 列）
+        cols = list(df.columns)
+        if self.date_col not in cols:
+            # 若不存在 date 列，则不使用时间编码
+            has_date = False
+        else:
+            has_date = True
+
+        if self.feature_cols is None:
+            # 去掉 date 与最后两列作为特征候选
+            cand = [c for c in cols if c != self.date_col]
+            if len(cand) >= 10:
+                # 假定最后两列为标签
+                self.feature_cols = cand[:8]
+                self.label_cols = cand[-2:]
+            else:
+                # 兜底：取前 8 为特征，后 2 为标签（若不足则抛错）
+                if len(cand) < 10:
+                    raise ValueError('CSV 列数不足，无法推断 8 个特征与 2 个标签，请显式传入 feature_cols 与 label_cols')
+        else:
+            # 若只给了 feature_cols，而未给 label_cols，则默认取剩余的最后两列
+            if self.label_cols is None:
+                rem = [c for c in cols if c not in ([self.date_col] + self.feature_cols)]
+                if len(rem) < 2:
+                    raise ValueError('无法推断 label_cols，请显式传入 label_cols')
+                self.label_cols = rem[-2:]
+
+        # 取出数据矩阵
+        df_features = df[self.feature_cols]
+        df_labels = df[self.label_cols]
+
+        # 划分边界（train/val/test）：使用 70/20/10
+        n = len(df)
+        n_train = int(n * 0.7)
+        n_test = int(n * 0.2)
+        n_val = n - n_train - n_test
+        border1s = [0, n_train - self.seq_len, n - n_test - self.seq_len]
+        border2s = [n_train, n_train + n_val, n]
+        border1 = border1s[self.set_type]
+        border2 = border2s[self.set_type]
+
+        data_x_all = df_features.values
+        data_y_all = df_labels.values
+
+        # fit scaler on train split only
+        if self.scale:
+            train_x = data_x_all[border1s[0]:border2s[0]]
+            train_y = data_y_all[border1s[0]:border2s[0]]
+            self.scaler_x.fit(train_x)
+            self.scaler_y.fit(train_y)
+            data_x = self.scaler_x.transform(data_x_all)
+            data_y = self.scaler_y.transform(data_y_all)
+        else:
+            data_x = data_x_all
+            data_y = data_y_all
+
+        # 时间编码
+        if has_date and self.timeenc == 0:
+            df_stamp = df[[self.date_col]][border1:border2]
+            df_stamp[self.date_col] = pd.to_datetime(df_stamp[self.date_col])
+            df_stamp['month'] = df_stamp[self.date_col].dt.month
+            df_stamp['day'] = df_stamp[self.date_col].dt.day
+            df_stamp['weekday'] = df_stamp[self.date_col].dt.weekday
+            df_stamp['hour'] = df_stamp[self.date_col].dt.hour
+            data_stamp = df_stamp.drop([self.date_col], axis=1).values
+        elif has_date and self.timeenc == 1:
+            df_stamp = df[[self.date_col]][border1:border2]
+            data_stamp = time_features(pd.to_datetime(df_stamp[self.date_col].values), freq=self.freq)
+            data_stamp = data_stamp.transpose(1, 0)
+        else:
+            # 不提供时间特征时用全零占位
+            data_stamp = np.zeros((border2 - border1, 1))
+
+        # 截取当前 split 的数据段
+        self.data_x = data_x[border1:border2]
+        # seq_y 期望为 label_len + pred_len 长度的序列（这里我们把标签序列取自原始标签列）
+        self.data_y = data_y[border1:border2]
+        self.data_stamp = data_stamp
+
+        # augmentation（仅训练）
+        if self.set_type == 0 and getattr(self.args, 'augmentation_ratio', 0) > 0:
+            self.data_x, self.data_y, _ = run_augmentation_single(self.data_x, self.data_y, self.args)
+
+    def __getitem__(self, index):
+        s_begin = index
+        s_end = s_begin + self.seq_len
+        r_begin = s_end - self.label_len
+        r_end = r_begin + self.label_len + self.pred_len
+
+        seq_x = self.data_x[s_begin:s_end]
+        # 对标签列，我们在外面期望 seq_y 长度为 label_len+pred_len，每个时间步包含 2 维标签
+        seq_y = self.data_y[r_begin:r_end]
+        seq_x_mark = self.data_stamp[s_begin:s_end]
+        seq_y_mark = self.data_stamp[r_begin:r_end]
+
+        return seq_x, seq_y, seq_x_mark, seq_y_mark
+
+    def __len__(self):
+        return len(self.data_x) - self.seq_len - self.pred_len + 1
+
+    def inverse_transform_y(self, data):
+        """把标签恢复到原始尺度，data 形状可以是 (N, label_dim) 或 (batch, seq, label_dim)。"""
+        shape = data.shape
+        flat = data.reshape(-1, shape[-1])
+        inv = self.scaler_y.inverse_transform(flat)
+        return inv.reshape(shape)
+

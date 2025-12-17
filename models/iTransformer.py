@@ -5,6 +5,7 @@ from layers.Transformer_EncDec import Encoder, EncoderLayer
 from layers.SelfAttention_Family import FullAttention, AttentionLayer
 from layers.Embed import DataEmbedding_inverted
 import numpy as np
+import logging
 
 
 class Model(nn.Module):
@@ -49,6 +50,14 @@ class Model(nn.Module):
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         # Normalization from Non-stationary Transformer
+
+        # 不需要使用x_mark_dec
+        #x_mark_enc=None.
+        if x_mark_enc!=None:
+            logging.debug("x_mark_enc:"+str(x_mark_enc.shape))
+           
+        else:
+            logging.debug("x_mark_enc is None")
         means = x_enc.mean(1, keepdim=True).detach()
         x_enc = x_enc - means
         stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
@@ -57,13 +66,18 @@ class Model(nn.Module):
         _, _, N = x_enc.shape
 
         # Embedding
+        logging.debug("x_enc:"+str(x_enc.shape))
         enc_out = self.enc_embedding(x_enc, x_mark_enc)
+        logging.debug("embedding shape:"+str(enc_out.shape))
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
-
+        logging.debug("encoder shape:"+str(enc_out.shape))
         dec_out = self.projection(enc_out).permute(0, 2, 1)[:, :, :N]
+        logging.debug("decoder shape:"+str(dec_out.shape))
+        
         # De-Normalization from Non-stationary Transformer
         dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
         dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+        logging.debug("final shape:"+str(dec_out.shape))
         return dec_out
 
     def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):
@@ -78,8 +92,10 @@ class Model(nn.Module):
         # Embedding
         enc_out = self.enc_embedding(x_enc, x_mark_enc)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
-
+        
         dec_out = self.projection(enc_out).permute(0, 2, 1)[:, :, :N]
+        
+        
         # De-Normalization from Non-stationary Transformer
         dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, L, 1))
         dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, L, 1))

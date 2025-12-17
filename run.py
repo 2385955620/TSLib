@@ -10,6 +10,7 @@ from exp.exp_classification import Exp_Classification
 from utils.print_args import print_args
 import random
 import numpy as np
+import logging
 
 if __name__ == '__main__':
     fix_seed = 2021
@@ -18,6 +19,8 @@ if __name__ == '__main__':
     np.random.seed(fix_seed)
 
     parser = argparse.ArgumentParser(description='TimesNet')
+
+    parser.add_argument('--debug', action='store_true', help='开启调试模式')
 
     # basic config
     parser.add_argument('--task_name', type=str, required=True, default='long_term_forecast',
@@ -28,6 +31,7 @@ if __name__ == '__main__':
                         help='model name, options: [Autoformer, Transformer, TimesNet]')
 
     # data loader
+    parser.add_argument('--data_stride',type=int,default=1,help='underwater data stride for data loading')
     parser.add_argument('--data', type=str, required=True, default='ETTh1', help='dataset type')
     parser.add_argument('--root_path', type=str, default='./data/ETT/', help='root path of the data file')
     parser.add_argument('--data_path', type=str, default='ETTh1.csv', help='data file')
@@ -141,6 +145,11 @@ if __name__ == '__main__':
     parser.add_argument('--patch_len', type=int, default=16, help='patch length')
 
     args = parser.parse_args()
+
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    print(f"Log level set to: {'DEBUG' if args.debug else 'INFO'}")
+    logging.basicConfig(level=log_level, format='%(levelname)s | %(message)s')
+
     if torch.cuda.is_available() and args.use_gpu:
         args.device = torch.device('cuda:{}'.format(args.gpu))
         print('Using GPU')

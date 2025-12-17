@@ -1,7 +1,8 @@
 from data_provider.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_M4, PSMSegLoader, \
-    MSLSegLoader, SMAPSegLoader, SMDSegLoader, SWATSegLoader, UEAloader
+    MSLSegLoader, SMAPSegLoader, SMDSegLoader, SWATSegLoader, UEAloader, UnderWaterLoader
 from data_provider.uea import collate_fn
 from torch.utils.data import DataLoader
+import logging
 
 data_dict = {
     'ETTh1': Dataset_ETT_hour,
@@ -15,14 +16,21 @@ data_dict = {
     'SMAP': SMAPSegLoader,
     'SMD': SMDSegLoader,
     'SWAT': SWATSegLoader,
-    'UEA': UEAloader
+    'UEA': UEAloader,
+    'UnderWater': UnderWaterLoader,
 }
 
 
 def data_provider(args, flag):
     Data = data_dict[args.data]
+    logging.info(f'Data: {Data}')
+    #print(type(Data))
+    #print(Data)
     timeenc = 0 if args.embed != 'timeF' else 1
-
+    
+    #**  测试
+    #timeenc=0
+    #**
     shuffle_flag = False if (flag == 'test' or flag == 'TEST') else True
     drop_last = False
     batch_size = args.batch_size
@@ -74,7 +82,7 @@ def data_provider(args, flag):
             target=args.target,
             timeenc=timeenc,
             freq=freq,
-            seasonal_patterns=args.seasonal_patterns
+            #seasonal_patterns=args.seasonal_patterns
         )
         print(flag, len(data_set))
         data_loader = DataLoader(

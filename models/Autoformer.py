@@ -6,6 +6,7 @@ from layers.AutoCorrelation import AutoCorrelation, AutoCorrelationLayer
 from layers.Autoformer_EncDec import Encoder, Decoder, EncoderLayer, DecoderLayer, my_Layernorm, series_decomp
 import math
 import numpy as np
+import logging
 
 
 class Model(nn.Module):
@@ -14,7 +15,7 @@ class Model(nn.Module):
     with inherent O(LlogL) complexity
     Paper link: https://openreview.net/pdf?id=I55UqU-M11y
     """
-
+    # 利用快速傅立叶变换，让模型复杂度降低至 O(LlogL)
     def __init__(self, configs):
         super(Model, self).__init__()
         self.task_name = configs.task_name
@@ -86,6 +87,9 @@ class Model(nn.Module):
                 configs.d_model * configs.seq_len, configs.num_class)
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+
+        logging.debug(f'x_enc shape: {x_enc.shape}, x_dec shape: {x_dec.shape}')
+        logging.debug(f'x_mark_enc shape: {x_mark_enc.shape}, x_mark_dec shape: {x_mark_dec.shape}')
         # decomp init
         mean = torch.mean(x_enc, dim=1).unsqueeze(
             1).repeat(1, self.pred_len, 1)
@@ -95,6 +99,8 @@ class Model(nn.Module):
         # decoder input
         trend_init = torch.cat(
             [trend_init[:, -self.label_len:, :], mean], dim=1)
+
+        logging.debug(f'seasonal_init shape before cat: {seasonal_init[:, -self.label_len:, :].shape}, zeros shape: {zeros.shape}')
         seasonal_init = torch.cat(
             [seasonal_init[:, -self.label_len:, :], zeros], dim=1)
         # enc

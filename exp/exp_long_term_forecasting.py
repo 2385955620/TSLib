@@ -11,8 +11,10 @@ import warnings
 import numpy as np
 from utils.dtw_metric import dtw, accelerated_dtw
 from utils.augmentation import run_augmentation, run_augmentation_single
+import logging
 
 warnings.filterwarnings('ignore')
+
 
 
 class Exp_Long_Term_Forecast(Exp_Basic):
@@ -34,10 +36,32 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
         return model_optim
 
+    # **************** #
+    # 水下任务的组合损失函数
+    def underwater_criterion(self, outputs, batch_y):
+        f_dim=-2
+        criterion1 = nn.CrossEntropyLoss()
+        criterion2 = nn.MSELoss()
+        logging.debug(f'outputs shape: {outputs.shape}, batch_y shape: {batch_y.shape}')
+        # outputs: [batch_size, pred_len, 8]  batch_y: [batch_size, pred_len, 2]
+        # 运动模式分类损失
+        logging.debug(f'test marker')
+        logging.debug(f'outputs slice shape: {outputs[:,:,0:4].reshape(-1,4).shape}, batch_y slice shape: {batch_y[:,:,0].long().reshape(-1).shape}')
+        loss1 = criterion1(outputs[:,:,0:4].reshape(-1,4), batch_y[:,:,0].long().reshape(-1))
+        loss2 = criterion2(outputs[:,:,5], batch_y[:,:,1])
+        loss = loss1 + loss2
+        return loss
+
+
     def _select_criterion(self):
-        criterion = nn.MSELoss()
-        return criterion
- 
+        if self.args.data=='UnderWater':
+            criterion=self.underwater_criterion
+            return criterion
+        else:
+            criterion = nn.MSELoss()
+            return criterion
+    
+    
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -88,11 +112,16 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()
+        
+        # if self.args.data=='UnderWater':   # 水下数据集的特殊损失函数
+        #     criterion1, criterion2 = self._select_criterion()
+        # else:
         criterion = self._select_criterion()
 
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
 
+        logging.info(f'Epochs: {self.args.train_epochs}, Train steps: {train_steps}, ')
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
@@ -100,6 +129,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             self.model.train()
             epoch_time = time.time()
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+                logging.debug(f'Batch x shape: {batch_x.shape}, Batch y shape: {batch_y.shape}')
                 iter_count += 1
                 model_optim.zero_grad()
                 batch_x = batch_x.float().to(self.device)
@@ -115,7 +145,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-
+                        # if self.args.data=='UnderWater':
+                        #     f_dim=-2
+                        #     outputs = outputs[:, -self.args.pred_len:, f_dim:]
+                        #     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                        #     loss1 = criterion1(outputs[:,:,0].reshape(-1), batch_y[:,:,0].long().reshape(-1))
+                        #     loss2 = criterion2(outputs[:,:,1], batch_y[:,:,1])
+                        #     loss = loss1 + loss2
+                        #     train_loss.append(loss.item())
+                        
+                        # else:
+                        # MS: 多变量预测单变量   M: 多变量预测单变量
                         f_dim = -1 if self.args.features == 'MS' else 0
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
                         batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
@@ -166,7 +206,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         return self.model
 
     def test(self, setting, test=0):
+        print('\n-----test-----')
         test_data, test_loader = self._get_data(flag='test')
+        
+        # 加载模型权重
         if test:
             print('loading model')
             self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
@@ -216,16 +259,19 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                 preds.append(pred)
                 trues.append(true)
+                # 绘制图像
                 if i % 20 == 0:
                     input = batch_x.detach().cpu().numpy()
+                    # 返归一化
                     if test_data.scale and self.args.inverse:
                         shape = input.shape
                         input = test_data.inverse_transform(input.reshape(shape[0] * shape[1], -1)).reshape(shape)
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
+                    # 保存为pdf文件
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
 
-        preds = np.concatenate(preds, axis=0)
+        preds = np.concatenate(preds, axis=0) # 拼接batch结果
         trues = np.concatenate(trues, axis=0)
         print('test shape:', preds.shape, trues.shape)
         preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
@@ -252,8 +298,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         else:
             dtw = 'Not calculated'
 
-        mae, mse, rmse, mape, mspe = metric(preds, trues)
+        logging.info(f'preds shape: {preds.shape}, trues shape: {trues.shape}')
+        if self.args.data == 'UnderWater':
+            mae, mse, rmse, mape, mspe = metric(preds[:,:,4], trues[:,:,1])
+        else:
+            mae, mse, rmse, mape, mspe = metric(preds, trues)
         print('mse:{}, mae:{}, dtw:{}'.format(mse, mae, dtw))
+        
         f = open("result_long_term_forecast.txt", 'a')
         f.write(setting + "  \n")
         f.write('mse:{}, mae:{}, dtw:{}'.format(mse, mae, dtw))
