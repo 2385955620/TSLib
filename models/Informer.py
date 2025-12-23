@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from layers.Transformer_EncDec import Decoder, DecoderLayer, Encoder, EncoderLayer, ConvLayer
 from layers.SelfAttention_Family import ProbAttention, AttentionLayer
 from layers.Embed import DataEmbedding
-
+import logging
 
 class Model(nn.Module):
     """
@@ -14,6 +14,7 @@ class Model(nn.Module):
 
     def __init__(self, configs):
         super(Model, self).__init__()
+        self.configs = configs
         self.task_name = configs.task_name
         self.pred_len = configs.pred_len
         self.label_len = configs.label_len
@@ -75,6 +76,10 @@ class Model(nn.Module):
             self.projection = nn.Linear(configs.d_model * configs.seq_len, configs.num_class)
 
     def long_forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        if self.configs.data == 'UnderWater':
+            x_mark_dec = None
+            x_mark_enc = None
+        logging.debug(f'x_enc shape: {x_enc.shape}, x_dec shape: {x_dec.shape}')
         enc_out = self.enc_embedding(x_enc, x_mark_enc)
         dec_out = self.dec_embedding(x_dec, x_mark_dec)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)

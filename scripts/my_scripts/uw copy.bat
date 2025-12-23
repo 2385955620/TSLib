@@ -13,20 +13,20 @@ python -u run.py ^
   --seq_len 96 ^
   --label_len 48 ^
   --pred_len 2 ^
-  --e_layers 3 ^
+  --e_layers 2 ^
   --d_layers 1 ^
   --factor 3 ^
   --enc_in 10 ^
   --dec_in 10 ^
   --c_out 10 ^
   --des "Exp" ^
-  --d_model 256 ^
+  --d_model 512 ^
   --d_ff 2048 ^
   --itr 1 ^
   --freq S ^
   --data_stride 20 ^
   --batch_size 512 ^
-  --train_epochs 20 ^
-  --patience 15 ^
+  --train_epochs 40 ^
+  --patience 25 ^
   --num_workers 1 ^
   

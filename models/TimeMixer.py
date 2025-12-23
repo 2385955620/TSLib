@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from layers.Autoformer_EncDec import series_decomp
 from layers.Embed import DataEmbedding_wo_pos
 from layers.StandardNorm import Normalize
-
+import logging
 
 class DFT_series_decomp(nn.Module):
     """
@@ -327,13 +327,14 @@ class Model(nn.Module):
         return x_enc, x_mark_enc
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
-
+        logging.debug(f'x_enc shape: {x_enc.shape}, x_dec shape: {x_dec.shape}')
         x_enc, x_mark_enc = self.__multi_scale_process_inputs(x_enc, x_mark_enc)
-
+        logging.debug(f'2 x_enc shape: {x_enc.shape}, x_dec shape: {x_dec.shape}')
         x_list = []
         x_mark_list = []
         if x_mark_enc is not None:
             for i, x, x_mark in zip(range(len(x_enc)), x_enc, x_mark_enc):
+                logging.debug(f'x shape before norm: {x.shape}')
                 B, T, N = x.size()
                 x = self.normalize_layers[i](x, 'norm')
                 if self.channel_independence:

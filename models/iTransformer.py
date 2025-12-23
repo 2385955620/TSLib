@@ -52,7 +52,8 @@ class Model(nn.Module):
         # Normalization from Non-stationary Transformer
 
         # 不需要使用x_mark_dec
-        #x_mark_enc=None.
+        x_mark_enc=None
+        
         if x_mark_enc!=None:
             logging.debug("x_mark_enc:"+str(x_mark_enc.shape))
            

@@ -48,8 +48,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         logging.debug(f'test marker')
         logging.debug(f'outputs slice shape: {outputs[:,:,0:4].reshape(-1,4).shape}, batch_y slice shape: {batch_y[:,:,0].long().reshape(-1).shape}')
         loss1 = criterion1(outputs[:,:,0:4].reshape(-1,4), batch_y[:,:,0].long().reshape(-1))
-        loss2 = criterion2(outputs[:,:,5], batch_y[:,:,1])
+        loss2 = criterion2(outputs[:,:,4], batch_y[:,:,1])
+        #logging.info(f'loss1 (classification loss): {loss1.item()}, loss2 (regression loss): {loss2.item()}')
         loss = loss1 + loss2
+        #loss=loss2
         return loss
 
 
@@ -109,6 +111,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         time_now = time.time()
 
         train_steps = len(train_loader)
+        # 提前结束训练配置
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()

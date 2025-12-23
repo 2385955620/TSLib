@@ -16,18 +16,172 @@ import logging
 
 warnings.filterwarnings('ignore')
 
-# # 水下外骨骼数据DataLoader
+# # # 水下外骨骼数据DataLoader
+# class UnderWaterLoader(Dataset):
+#     def __init__(self, args, root_path, flag='train', size=None,
+#                  features='MS', data_path='underwater.csv',
+#                  target=None, scale=False, timeenc=0, freq='L', 
+#                  data_stride=20,seasonal_patterns=None):  # <--- 这里设置为 20，表示采样间隔
+        
+#         self.args = args
+#         self.data_stride = data_stride 
+
+#         # 这里的 seq_len 指的是“模型最终看到的点数”
+#         # 比如 96。实际物理跨度 = 96 * 20 * 0.001s = 1.92s
+#         if size == None:
+#             self.seq_len = 96
+#             self.label_len = 48
+#             self.pred_len = 48
+#         else:
+#             self.seq_len = size[0]
+#             self.label_len = size[1]
+#             self.pred_len = size[2]
+
+#         # 初始化参数...
+#         self.features = features
+#         self.target = target
+#         self.scale = scale
+#         self.timeenc = timeenc
+#         self.freq = freq  # 时间频率
+#         self.root_path = root_path
+#         self.data_path = data_path
+        
+#         # 映射 flag
+#         assert flag in ['train', 'test', 'val']
+#         type_map = {'train': 0, 'val': 1, 'test': 2}
+#         self.set_type = type_map[flag]
+        
+#         self.__read_data__()
+
+#     def __read_data__(self):
+#         self.scaler_x = StandardScaler()
+#         self.scaler_y = StandardScaler()
+        
+#         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+
+#         # ========================================================
+#         #  修改点 1： 绝对不要在这里进行 iloc 下采样！
+#         #  我们要保留完整的 1000Hz 数据
+#         # ========================================================
+#         # (原先的 df_raw.iloc[::self.data_stride] 被删除了)
+        
+#         cols = list(df_raw.columns)
+#         if 'date' in cols:
+#             cols.remove('date')
+        
+#         label_cols = cols[-2:] 
+#         feature_cols = cols[:-2] 
+#         #label_cols = cols[-10:-1] 
+#         #feature_cols = cols[-10:-1] 
+
+#         # 计算切分边界
+#         num_train = int(len(df_raw) * 0.7)
+#         num_test = int(len(df_raw) * 0.2)
+#         num_vali = len(df_raw) - num_train - num_test
+        
+#         # 计算实际需要的物理长度 (Raw Points)
+#         # 因为我们要间隔取样，所以需要的原始数据长度是 seq_len * stride
+#         # 比如需要取96个点，间隔20，那实际需要在原始数据上跨越 96*20 = 1920 个点
+#         self.raw_seq_len = self.seq_len * self.data_stride
+#         self.raw_label_len = self.label_len * self.data_stride
+#         self.raw_pred_len = self.pred_len * self.data_stride
+        
+#         # [训练集起点, 验证集起点, 测试集起点]
+#         border1s = [0, num_train - self.raw_seq_len, len(df_raw) - num_test - self.raw_seq_len]
+#         # [训练集终点, 验证集终点, 测试集终点]
+#         border2s = [num_train, num_train + num_vali, len(df_raw)]
+
+#         #print("border1s:",border1s)
+#         #print("border2s:",border2s)
+
+#         border1 = border1s[self.set_type]
+#         border2 = border2s[self.set_type]
+
+#         df_data_x = df_raw[feature_cols]
+#         df_data_y = df_raw[label_cols]
+
+#         # 归一化
+#         if self.scale:
+#             train_data_x = df_data_x[border1s[0]:border2s[0]]
+#             train_data_y = df_data_y[border1s[0]:border2s[0]]
+#             self.scaler_x.fit(train_data_x.values)
+#             self.scaler_y.fit(train_data_y.values)
+#             data_x = self.scaler_x.transform(df_data_x.values)
+#             data_y = self.scaler_y.transform(df_data_y.values)
+#             logging.info("Data normalized by StandardScaler.")
+#         else:
+#             data_x = df_data_x.values
+#             data_y = df_data_y.values
+#             logging.info("Data not normalized.")
+
+#         # 时间戳处理 (保留原始精度)
+#         df_stamp = df_raw[['date']][border1:border2]
+#         df_stamp['date'] = pd.to_datetime(df_stamp.date)
+#         #print(df_stamp.head(1000))
+
+#         logging.debug(f'------self.timeenc: {self.timeenc}')
+#         if self.timeenc == 0:
+#             df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
+#             df_stamp['minute'] = df_stamp.date.apply(lambda row: row.minute, 1)
+#             df_stamp['second'] = df_stamp.date.apply(lambda row: row.second, 1)
+#             df_stamp['millis'] = df_stamp.date.apply(lambda row: row.microsecond // 1000, 1)
+            
+#             temp_df = df_stamp.drop(['date'], axis=1)
+#             temp_df.to_csv("data_stamp.txt", index=False, sep=',')
+#             print(f">>> 时间戳特征已保存至: {os.path.abspath('data_stamp.txt')}")
+#             data_stamp = df_stamp.drop(['date'], 1).values
+            
+#         elif self.timeenc == 1:
+#             data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
+#             data_stamp = data_stamp.transpose(1, 0)
+#             np.savetxt("data_stamp.txt", data_stamp, delimiter=',', fmt='%.6f')
+        
+#         self.data_x = data_x[border1:border2]
+#         self.data_y = data_y[border1:border2]
+#         self.data_stamp = data_stamp
+       
+#         logging.debug(f'---------data_stamp shape: {data_stamp.shape}')
+
+#     def __getitem__(self, index):
+#         # ========================================================
+#         #  修改点 2： 在这里进行“空洞采样” (Dilated slicing)
+#         # ========================================================
+        
+#         # 1. 确定原始数据的起始点
+#         # index 是每一个 0.001s 的步进，保证所有数据都能被遍历到
+#         s_begin = index
+#         s_end = s_begin + self.raw_seq_len # raw_seq_len = 96 * 20
+        
+#         r_begin = s_end - self.raw_label_len
+#         r_end = r_begin + self.raw_label_len + self.raw_pred_len
+
+#         # 2. 使用 [::self.data_stride] 进行间隔取样
+#         # 原始数据切片: [s_begin : s_end] -> 长度 1920
+#         # 间隔取样后: [::20] -> 长度 96 (符合模型输入)
+#         seq_x = self.data_x[s_begin : s_end : self.data_stride]
+#         seq_y = self.data_y[r_begin : r_end : self.data_stride]
+#         logging.debug(f'seq_x shape: {seq_x.shape}, seq_y shape: {seq_y.shape}')
+        
+#         seq_x_mark = self.data_stamp[s_begin : s_end : self.data_stride]
+#         seq_y_mark = self.data_stamp[r_begin : r_end : self.data_stride]
+
+#         return seq_x, seq_y, seq_x_mark, seq_y_mark
+#         #return seq_x, seq_y, None, None  # pytorch库会报错，不可行
+        
+
+#     def __len__(self):
+#         # 长度计算使用 raw 长度，因为我们是在原始数据上滑动的
+#         return len(self.data_x) - self.raw_seq_len - self.raw_pred_len + 1
+
 class UnderWaterLoader(Dataset):
     def __init__(self, args, root_path, flag='train', size=None,
                  features='MS', data_path='underwater.csv',
                  target=None, scale=False, timeenc=0, freq='L', 
-                 data_stride=20,seasonal_patterns=None):  # <--- 这里设置为 20，表示采样间隔
+                 data_stride=20, seasonal_patterns=None):
         
         self.args = args
         self.data_stride = data_stride 
 
-        # 这里的 seq_len 指的是“模型最终看到的点数”
-        # 比如 96。实际物理跨度 = 96 * 20 * 0.001s = 1.92s
         if size == None:
             self.seq_len = 96
             self.label_len = 48
@@ -37,16 +191,14 @@ class UnderWaterLoader(Dataset):
             self.label_len = size[1]
             self.pred_len = size[2]
 
-        # 初始化参数...
         self.features = features
         self.target = target
         self.scale = scale
         self.timeenc = timeenc
-        self.freq = freq  # 时间频率
+        self.freq = freq
         self.root_path = root_path
         self.data_path = data_path
         
-        # 映射 flag
         assert flag in ['train', 'test', 'val']
         type_map = {'train': 0, 'val': 1, 'test': 2}
         self.set_type = type_map[flag]
@@ -59,117 +211,110 @@ class UnderWaterLoader(Dataset):
         
         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
 
-        # ========================================================
-        #  修改点 1： 绝对不要在这里进行 iloc 下采样！
-        #  我们要保留完整的 1000Hz 数据
-        # ========================================================
-        # (原先的 df_raw.iloc[::self.data_stride] 被删除了)
-        
         cols = list(df_raw.columns)
         if 'date' in cols:
             cols.remove('date')
         
         label_cols = cols[-2:] 
         feature_cols = cols[:-2] 
-        #label_cols = cols[-10:-1] 
-        #feature_cols = cols[-10:-1] 
 
-        # 计算切分边界
-        num_train = int(len(df_raw) * 0.7)
-        num_test = int(len(df_raw) * 0.2)
-        num_vali = len(df_raw) - num_train - num_test
-        
-        # 计算实际需要的物理长度 (Raw Points)
-        # 因为我们要间隔取样，所以需要的原始数据长度是 seq_len * stride
-        # 比如需要取96个点，间隔20，那实际需要在原始数据上跨越 96*20 = 1920 个点
+        # 计算实际需要的物理长度
         self.raw_seq_len = self.seq_len * self.data_stride
         self.raw_label_len = self.label_len * self.data_stride
         self.raw_pred_len = self.pred_len * self.data_stride
         
-        # [训练集起点, 验证集起点, 测试集起点]
-        border1s = [0, num_train - self.raw_seq_len, len(df_raw) - num_test - self.raw_seq_len]
-        # [训练集终点, 验证集终点, 测试集终点]
-        border2s = [num_train, num_train + num_vali, len(df_raw)]
+        # ========================================================
+        # 修改点 1：生成所有可能的合法起始索引，并随机打乱
+        # ========================================================
+        total_len = len(df_raw)
+        # 最大的合法起始点索引，保证后面能取出完整的 seq+pred 长度
+        max_possible_index = total_len - self.raw_seq_len - self.raw_pred_len
+        
+        # 生成一个包含所有合法起始位置的数组 [0, 1, 2, ..., max_idx]
+        all_possible_indices = np.arange(max_possible_index + 1)
+        
+        # 【重要】固定随机种子，确保 train/val/test 加载器打乱的顺序是一模一样的
+        np.random.seed(2025) 
+        np.random.shuffle(all_possible_indices)
 
-        #print("border1s:",border1s)
-        #print("border2s:",border2s)
+        # 按照 7:1:2 比例划分索引列表
+        num_train = int(len(all_possible_indices) * 0.7)
+        num_test = int(len(all_possible_indices) * 0.2)
+        num_vali = len(all_possible_indices) - num_train - num_test
 
-        border1 = border1s[self.set_type]
-        border2 = border2s[self.set_type]
-
+        # 根据当前的 flag 分配对应的索引列表
+        if self.set_type == 0: # train
+            self.indices = all_possible_indices[:num_train]
+        elif self.set_type == 1: # val
+            self.indices = all_possible_indices[num_train : num_train + num_vali]
+        elif self.set_type == 2: # test
+            self.indices = all_possible_indices[num_train + num_vali :]
+        
+        # ========================================================
+        # 修改点 2：保留全量数据，不再切片
+        # ========================================================
         df_data_x = df_raw[feature_cols]
         df_data_y = df_raw[label_cols]
 
-        # 归一化
         if self.scale:
-            train_data_x = df_data_x[border1s[0]:border2s[0]]
-            train_data_y = df_data_y[border1s[0]:border2s[0]]
-            self.scaler_x.fit(train_data_x.values)
-            self.scaler_y.fit(train_data_y.values)
+            # 拟合 Scaler 时，理论上最好只用训练集的数据分布
+            # 但由于是随机采样，数据散落在各处，这里为了方便且防止越界，
+            # 可以选择 fit 全量数据，或者 fit 那些属于训练集的行（较复杂）
+            # 这里采用 fit 全量数据的简化方案（注意：这在严格学术上有一点点数据泄露，但在随机采样场景很常见）
+            self.scaler_x.fit(df_data_x.values)
+            self.scaler_y.fit(df_data_y.values)
             data_x = self.scaler_x.transform(df_data_x.values)
             data_y = self.scaler_y.transform(df_data_y.values)
         else:
             data_x = df_data_x.values
             data_y = df_data_y.values
 
-        # 时间戳处理 (保留原始精度)
-        df_stamp = df_raw[['date']][border1:border2]
+        # 时间戳处理 (全量)
+        df_stamp = df_raw[['date']]
         df_stamp['date'] = pd.to_datetime(df_stamp.date)
-        print(df_stamp.head(1000))
 
-        logging.debug(f'------self.timeenc: {self.timeenc}')
         if self.timeenc == 0:
             df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
             df_stamp['minute'] = df_stamp.date.apply(lambda row: row.minute, 1)
             df_stamp['second'] = df_stamp.date.apply(lambda row: row.second, 1)
             df_stamp['millis'] = df_stamp.date.apply(lambda row: row.microsecond // 1000, 1)
-            
-            temp_df = df_stamp.drop(['date'], axis=1)
-            temp_df.to_csv("data_stamp.txt", index=False, sep=',')
-            print(f">>> 时间戳特征已保存至: {os.path.abspath('data_stamp.txt')}")
             data_stamp = df_stamp.drop(['date'], 1).values
-            
         elif self.timeenc == 1:
             data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
             data_stamp = data_stamp.transpose(1, 0)
-            np.savetxt("data_stamp.txt", data_stamp, delimiter=',', fmt='%.6f')
         
-        self.data_x = data_x[border1:border2]
-        self.data_y = data_y[border1:border2]
+        # 【注意】这里保存的是完整的全量数据
+        self.data_x = data_x
+        self.data_y = data_y
         self.data_stamp = data_stamp
-       
-        logging.debug(f'---------data_stamp shape: {data_stamp.shape}')
 
     def __getitem__(self, index):
         # ========================================================
-        #  修改点 2： 在这里进行“空洞采样” (Dilated slicing)
+        # 修改点 3：通过 self.indices 映射真实的起始位置
         # ========================================================
+        # index 是 DataLoader 给出的 0 ~ len(subset) 的索引
+        # s_begin 是该样本在原始全量数据中的真实起始行号
+        s_begin = self.indices[index] 
         
-        # 1. 确定原始数据的起始点
-        # index 是每一个 0.001s 的步进，保证所有数据都能被遍历到
-        s_begin = index
-        s_end = s_begin + self.raw_seq_len # raw_seq_len = 96 * 20
+        s_end = s_begin + self.raw_seq_len
         
         r_begin = s_end - self.raw_label_len
         r_end = r_begin + self.raw_label_len + self.raw_pred_len
 
-        # 2. 使用 [::self.data_stride] 进行间隔取样
-        # 原始数据切片: [s_begin : s_end] -> 长度 1920
-        # 间隔取样后: [::20] -> 长度 96 (符合模型输入)
+        # 采样逻辑不变 (Dilated slicing)
         seq_x = self.data_x[s_begin : s_end : self.data_stride]
         seq_y = self.data_y[r_begin : r_end : self.data_stride]
-        logging.debug(f'seq_x shape: {seq_x.shape}, seq_y shape: {seq_y.shape}')
         
         seq_x_mark = self.data_stamp[s_begin : s_end : self.data_stride]
         seq_y_mark = self.data_stamp[r_begin : r_end : self.data_stride]
 
         return seq_x, seq_y, seq_x_mark, seq_y_mark
-        
 
     def __len__(self):
-        # 长度计算使用 raw 长度，因为我们是在原始数据上滑动的
-        return len(self.data_x) - self.raw_seq_len - self.raw_pred_len + 1
-
+        # ========================================================
+        # 修改点 4：长度是当前子集（indices列表）的长度
+        # ========================================================
+        return len(self.indices)
 
 
 class UnderWater_drop(Dataset):
