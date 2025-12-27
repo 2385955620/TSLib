@@ -6,13 +6,13 @@ python -u run.py ^
   --is_training 1 ^
   --root_path ./dataset/underwater/ ^
   --data_path 7.24_data.csv ^
-  --model_id underwater_96_48 ^
+  --model_id underwater_test ^
   --model %model_name% ^
   --data UnderWater ^
   --features M ^
-  --seq_len 96 ^
-  --label_len 48 ^
-  --pred_len 2 ^
+  --seq_len 120 ^
+  --label_len 60 ^
+  --pred_len 1 ^
   --e_layers 3 ^
   --d_layers 1 ^
   --factor 3 ^
@@ -20,13 +20,14 @@ python -u run.py ^
   --dec_in 10 ^
   --c_out 10 ^
   --des "Exp" ^
-  --d_model 256 ^
-  --d_ff 2048 ^
+  --d_model 1024 ^
+  --d_ff 4096^
   --itr 1 ^
   --freq S ^
   --data_stride 20 ^
   --batch_size 512 ^
   --train_epochs 20 ^
-  --patience 15 ^
+  --patience 10 ^
   --num_workers 1 ^
+  --lradj "cosine"
   

@@ -26,12 +26,14 @@ class Model(nn.Module):
             [
                 EncoderLayer(
                     AttentionLayer(
+                        #  修改此处以输出注意力图 ***
                         FullAttention(False, configs.factor, attention_dropout=configs.dropout,
-                                      output_attention=False), configs.d_model, configs.n_heads),
+                                      output_attention=True), configs.d_model, configs.n_heads),
                     configs.d_model,
                     configs.d_ff,
                     dropout=configs.dropout,
                     activation=configs.activation
+                    
                 ) for l in range(configs.e_layers)
             ],
             norm_layer=torch.nn.LayerNorm(configs.d_model)
@@ -74,12 +76,13 @@ class Model(nn.Module):
         logging.debug("encoder shape:"+str(enc_out.shape))
         dec_out = self.projection(enc_out).permute(0, 2, 1)[:, :, :N]
         logging.debug("decoder shape:"+str(dec_out.shape))
-        
+        logging.debug("1:"+str(dec_out[0,0,:-1]))
         # De-Normalization from Non-stationary Transformer
-        dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
-        dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+        #dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+        #dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+        logging.debug("2:"+str(dec_out[0,0,:-1]))
         logging.debug("final shape:"+str(dec_out.shape))
-        return dec_out
+        return dec_out, attns  # 增加返回注意力图
 
     def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):
         # Normalization from Non-stationary Transformer
@@ -135,8 +138,8 @@ class Model(nn.Module):
 
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
-            return dec_out[:, -self.pred_len:, :]  # [B, L, D]
+            dec_out, attns= self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            return dec_out[:, -self.pred_len:, :],attns  # [B, L, D]
         if self.task_name == 'imputation':
             dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
             return dec_out  # [B, L, D]

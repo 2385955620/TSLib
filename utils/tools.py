@@ -118,3 +118,22 @@ def adjustment(gt, pred):
 
 def cal_accuracy(y_pred, y_true):
     return np.mean(y_pred == y_true)
+
+
+
+
+
+def print_gpu_memory():
+    if torch.cuda.is_available():
+        # 1. 当前模型和数据实际占用的显存
+        allocated = torch.cuda.memory_allocated() / (1024 ** 2)
+        # 2. PyTorch 缓存管理器向 OS 申请的总显存 (通常 > allocated)
+        reserved = torch.cuda.memory_reserved() / (1024 ** 2)
+        # 3. 历史峰值 (用于排查 OOM)
+        max_allocated = torch.cuda.max_memory_allocated() / (1024 ** 2)
+        
+        print(f"当前占用 (Allocated): {allocated:.2f} MB")
+        print(f"缓存占用 (Reserved):  {reserved:.2f} MB")
+        print(f"历史峰值 (Peak):      {max_allocated:.2f} MB")
+        print("-" * 30)
+

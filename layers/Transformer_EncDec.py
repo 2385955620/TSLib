@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import logging
 
 class ConvLayer(nn.Module):
     def __init__(self, c_in):
@@ -72,6 +72,10 @@ class Encoder(nn.Module):
         else:
             for attn_layer in self.attn_layers:
                 x, attn = attn_layer(x, attn_mask=attn_mask, tau=tau, delta=delta)
+                #logging.info(f'{attn}')
+                #logging.info(f'attn type: {type(attn)}')
+                #logging.info(f'Encoder layer attn shape: {attn.shape}')
+                
                 attns.append(attn)
 
         if self.norm is not None:

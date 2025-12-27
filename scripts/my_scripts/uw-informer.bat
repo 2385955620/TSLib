@@ -14,14 +14,14 @@ python -u run.py ^
   --seq_len 96 ^
   --label_len 48 ^
   --pred_len 2 ^
-  --e_layers 2 ^
+  --e_layers 3 ^
   --d_layers 1 ^
   --factor 3 ^
   --enc_in 8 ^
   --dec_in 2 ^
   --c_out 5 ^
   --des "Exp" ^
-  --d_model 512 ^
+  --d_model 256 ^
   --d_ff 2048 ^
   --itr 1 ^
   --freq s ^
