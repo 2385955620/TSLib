@@ -328,8 +328,10 @@ class Model(nn.Module):
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         logging.debug(f'x_enc shape: {x_enc.shape}, x_dec shape: {x_dec.shape}')
+        if self.configs.data=='UnderWater':
+            x_mark_enc=None
         x_enc, x_mark_enc = self.__multi_scale_process_inputs(x_enc, x_mark_enc)
-        logging.debug(f'2 x_enc shape: {x_enc.shape}, x_dec shape: {x_dec.shape}')
+        #logging.debug(f'2 x_enc shape: {x_enc.shape}, x_dec shape: {x_dec.shape}')
         x_list = []
         x_mark_list = []
         if x_mark_enc is not None:
