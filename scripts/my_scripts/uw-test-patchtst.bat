@@ -1,12 +1,13 @@
 @echo off
 ::set model_name=Autoformer
-set model_name=Informer
+::set model_name=Informer
+set model_name=PatchTST
 
 python -u run.py ^
   --task_name long_term_forecast ^
-  --is_training 1 ^
+  --is_training 0 ^
   --root_path ./dataset/underwater/ ^
-  --data_path 7.24_data.csv ^
+  --data_path 12.27data.csv ^
   --model_id underwater_test ^
   --model %model_name% ^
   --data UnderWater ^
@@ -26,7 +27,8 @@ python -u run.py ^
   --itr 1 ^
   --freq s ^
   --data_stride 20 ^
-  --batch_size 156 ^
+  --batch_size 512 ^
   --train_epochs 20 ^
   --patience 10 ^
-  --num_workers 0
+  --num_workers 0 ^
+  --lradj "cosine"

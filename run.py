@@ -18,6 +18,14 @@ if __name__ == '__main__':
     torch.manual_seed(fix_seed)
     np.random.seed(fix_seed)
 
+
+    torch.cuda.manual_seed(fix_seed)
+    torch.cuda.manual_seed_all(fix_seed)  # 如果你使用的是多卡并行
+
+    
+    # torch.backends.cudnn.deterministic = True. # 太慢了
+    # torch.backends.cudnn.benchmark = False
+
     parser = argparse.ArgumentParser(description='TimesNet')
 
     parser.add_argument('--debug', action='store_true', help='开启调试模式')

@@ -5,12 +5,12 @@ set CUDA_VISIBLE_DEVICES=0
 :: 设置超参数变量
 set model_name=TimeMixer
 set seq_len=120
-set e_layers=3
+set e_layers=2
 set down_sampling_layers=3
 set down_sampling_window=2
 set learning_rate=0.01
-set d_model=128
-set d_ff=256
+set d_model=512
+set d_ff=1024
 set train_epochs=20
 set patience=10
 set batch_size=16

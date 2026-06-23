@@ -210,10 +210,20 @@ class UnderWaterLoader(Dataset):
         self.scaler_y = StandardScaler()
         
         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
-
+        #print(f"DEBUG: 正在读取文件: {self.data_path}")
+        #print(f"DEBUG: 原始 CSV 行数: {len(df_raw)}")
+        #print(f"DEBUG: 丢弃 NaN 后的行数: {len(df_raw.dropna())}") # 看看是不是因为空值被丢了
         cols = list(df_raw.columns)
+        time_col = None
         if 'date' in cols:
+            time_col = 'date'
             cols.remove('date')
+        elif 'Time' in cols:
+            time_col = 'Time'
+            cols.remove('Time')
+        elif 'time' in cols:
+            time_col = 'time'
+            cols.remove('time')
         
         label_cols = cols[-2:] 
         feature_cols = cols[:-2] 
@@ -234,13 +244,16 @@ class UnderWaterLoader(Dataset):
         all_possible_indices = np.arange(max_possible_index + 1)
         
         # 【重要】固定随机种子，确保 train/val/test 加载器打乱的顺序是一模一样的
+        ########
         np.random.seed(2025) 
-        np.random.shuffle(all_possible_indices)
+        np.random.shuffle(all_possible_indices)   # 做连续实验时需要关闭
 
         # 按照 7:1:2 比例划分索引列表
         num_train = int(len(all_possible_indices) * 0.7)
         num_test = int(len(all_possible_indices) * 0.2)
         num_vali = len(all_possible_indices) - num_train - num_test
+        print(f"DEBUG: total_len={total_len}, max_possible_index={max_possible_index}")
+        print(f"DEBUG: num_train={num_train}, num_vali={num_vali}, num_test={num_test}")
 
         # 根据当前的 flag 分配对应的索引列表
         if self.set_type == 0: # train
@@ -270,8 +283,18 @@ class UnderWaterLoader(Dataset):
             data_y = df_data_y.values
 
         # 时间戳处理 (全量)
-        df_stamp = df_raw[['date']]
-        df_stamp['date'] = pd.to_datetime(df_stamp.date)
+        if time_col == 'date':
+            df_stamp = pd.DataFrame({'date': pd.to_datetime(df_raw['date'])})
+        elif time_col in {'Time', 'time'}:
+            base_time = pd.Timestamp('2024-01-01 00:00:00')
+            df_stamp = pd.DataFrame({
+                'date': base_time + pd.to_timedelta(df_raw[time_col].astype(float), unit='s')
+            })
+        else:
+            raise KeyError(
+                f'UnderWaterLoader expects one of ["date", "Time", "time"] as a time column, '
+                f'but got columns: {list(df_raw.columns)}'
+            )
 
         if self.timeenc == 0:
             df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
@@ -315,6 +338,176 @@ class UnderWaterLoader(Dataset):
         # 修改点 4：长度是当前子集（indices列表）的长度
         # ========================================================
         return len(self.indices)
+
+
+class UnderWaterLoaderContinuous(Dataset):
+    def __init__(self, args, root_path, flag='train', size=None,
+                 features='MS', data_path='underwater.csv',
+                 target=None, scale=False, timeenc=0, freq='L', 
+                 data_stride=20, seasonal_patterns=None):
+        
+        self.args = args
+        self.data_stride = data_stride 
+
+        if size == None:
+            self.seq_len = 96
+            self.label_len = 48
+            self.pred_len = 48
+        else:
+            self.seq_len = size[0]
+            self.label_len = size[1]
+            self.pred_len = size[2]
+
+        self.features = features
+        self.target = target
+        self.scale = scale
+        self.timeenc = timeenc
+        self.freq = freq
+        self.root_path = root_path
+        self.data_path = data_path
+        
+        assert flag in ['train', 'test', 'val']
+        type_map = {'train': 0, 'val': 1, 'test': 2}
+        self.set_type = type_map[flag]
+        
+        self.__read_data__()
+
+    def __read_data__(self):
+        self.scaler_x = StandardScaler()
+        self.scaler_y = StandardScaler()
+        
+        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+        #print(f"DEBUG: 正在读取文件: {self.data_path}")
+        #print(f"DEBUG: 原始 CSV 行数: {len(df_raw)}")
+        #print(f"DEBUG: 丢弃 NaN 后的行数: {len(df_raw.dropna())}") # 看看是不是因为空值被丢了
+        cols = list(df_raw.columns)
+        time_col = None
+        if 'date' in cols:
+            time_col = 'date'
+            cols.remove('date')
+        elif 'Time' in cols:
+            time_col = 'Time'
+            cols.remove('Time')
+        elif 'time' in cols:
+            time_col = 'time'
+            cols.remove('time')
+        
+        label_cols = cols[-2:] 
+        feature_cols = cols[:-2] 
+
+        # 计算实际需要的物理长度
+        self.raw_seq_len = self.seq_len * self.data_stride
+        self.raw_label_len = self.label_len * self.data_stride
+        self.raw_pred_len = self.pred_len * self.data_stride
+        
+        # ========================================================
+        # 修改点 1：生成所有可能的合法起始索引，并随机打乱
+        # ========================================================
+        total_len = len(df_raw)
+        # 最大的合法起始点索引，保证后面能取出完整的 seq+pred 长度
+        max_possible_index = total_len - self.raw_seq_len - self.raw_pred_len
+        
+        # 生成一个包含所有合法起始位置的数组 [0, 1, 2, ..., max_idx]
+        all_possible_indices = np.arange(max_possible_index + 1)
+        
+        # 【重要】固定随机种子，确保 train/val/test 加载器打乱的顺序是一模一样的
+        ########
+        np.random.seed(2025) 
+        # 关闭数据集打乱
+        #np.random.shuffle(all_possible_indices)   # 做连续实验时需要关闭
+
+        # 全部划分给测试集
+        num_train = int(len(all_possible_indices) * 0)
+        num_test = int(len(all_possible_indices) * 1)
+        num_vali = len(all_possible_indices) - num_train - num_test
+        print(f"DEBUG: total_len={total_len}, max_possible_index={max_possible_index}")
+        print(f"DEBUG: num_train={num_train}, num_vali={num_vali}, num_test={num_test}")
+
+        # 根据当前的 flag 分配对应的索引列表
+        if self.set_type == 0: # train
+            self.indices = all_possible_indices[:num_train]
+        elif self.set_type == 1: # val
+            self.indices = all_possible_indices[num_train : num_train + num_vali]
+        elif self.set_type == 2: # test
+            self.indices = all_possible_indices[num_train + num_vali :]
+        
+        # ========================================================
+        # 修改点 2：保留全量数据，不再切片
+        # ========================================================
+        df_data_x = df_raw[feature_cols]
+        df_data_y = df_raw[label_cols]
+
+        if self.scale:
+            # 拟合 Scaler 时，理论上最好只用训练集的数据分布
+            # 但由于是随机采样，数据散落在各处，这里为了方便且防止越界，
+            # 可以选择 fit 全量数据，或者 fit 那些属于训练集的行（较复杂）
+            # 这里采用 fit 全量数据的简化方案（注意：这在严格学术上有一点点数据泄露，但在随机采样场景很常见）
+            self.scaler_x.fit(df_data_x.values)
+            self.scaler_y.fit(df_data_y.values)
+            data_x = self.scaler_x.transform(df_data_x.values)
+            data_y = self.scaler_y.transform(df_data_y.values)
+        else:
+            data_x = df_data_x.values
+            data_y = df_data_y.values
+
+        # 时间戳处理 (全量)
+        if time_col == 'date':
+            df_stamp = pd.DataFrame({'date': pd.to_datetime(df_raw['date'])})
+        elif time_col in {'Time', 'time'}:
+            base_time = pd.Timestamp('2024-01-01 00:00:00')
+            df_stamp = pd.DataFrame({
+                'date': base_time + pd.to_timedelta(df_raw[time_col].astype(float), unit='s')
+            })
+        else:
+            raise KeyError(
+                f'UnderWaterLoader expects one of ["date", "Time", "time"] as a time column, '
+                f'but got columns: {list(df_raw.columns)}'
+            )
+
+        if self.timeenc == 0:
+            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
+            df_stamp['minute'] = df_stamp.date.apply(lambda row: row.minute, 1)
+            df_stamp['second'] = df_stamp.date.apply(lambda row: row.second, 1)
+            df_stamp['millis'] = df_stamp.date.apply(lambda row: row.microsecond // 1000, 1)
+            data_stamp = df_stamp.drop(['date'], 1).values
+        elif self.timeenc == 1:
+            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
+            data_stamp = data_stamp.transpose(1, 0)
+        
+        # 【注意】这里保存的是完整的全量数据
+        self.data_x = data_x
+        self.data_y = data_y
+        self.data_stamp = data_stamp
+
+    def __getitem__(self, index):
+        # ========================================================
+        # 修改点 3：通过 self.indices 映射真实的起始位置
+        # ========================================================
+        # index 是 DataLoader 给出的 0 ~ len(subset) 的索引
+        # s_begin 是该样本在原始全量数据中的真实起始行号
+        s_begin = self.indices[index] 
+        
+        s_end = s_begin + self.raw_seq_len
+        
+        r_begin = s_end - self.raw_label_len
+        r_end = r_begin + self.raw_label_len + self.raw_pred_len
+
+        # 采样逻辑不变 (Dilated slicing)
+        seq_x = self.data_x[s_begin : s_end : self.data_stride]
+        seq_y = self.data_y[r_begin : r_end : self.data_stride]
+        
+        seq_x_mark = self.data_stamp[s_begin : s_end : self.data_stride]
+        seq_y_mark = self.data_stamp[r_begin : r_end : self.data_stride]
+
+        return seq_x, seq_y, seq_x_mark, seq_y_mark
+
+    def __len__(self):
+        # ========================================================
+        # 修改点 4：长度是当前子集（indices列表）的长度
+        # ========================================================
+        return len(self.indices)
+
+
 
 
 class UnderWater_drop(Dataset):

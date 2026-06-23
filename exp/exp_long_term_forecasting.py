@@ -12,6 +12,9 @@ import numpy as np
 from utils.dtw_metric import dtw, accelerated_dtw
 from utils.augmentation import run_augmentation, run_augmentation_single
 import logging
+import matplotlib.pyplot as plt
+import seaborn as sns
+import tqdm
 
 warnings.filterwarnings('ignore')
 
@@ -221,6 +224,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 else:
                     loss.backward()
                     model_optim.step()
+                #print_gpu_memory()
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
@@ -263,7 +267,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         dummy_x_dec      = torch.randn(1, 61, 2).to(self.device)   # Decoder 输入
         dummy_x_mark_dec = torch.randn(1, 61, 6).to(self.device)   # Decoder 时间特征
         #summary(self.model, input_size=(1, self.args.seq_len, self.args.enc_in), device=str(self.device))
+        
         summary(self.model, input_data=[dummy_x_enc,dummy_x_mark_enc,dummy_x_dec,dummy_x_mark_dec], device=str(self.device))
+        
+        
         # ===========================================================================
         # [新增] 模块：单样本推理时延测试 (Single Sample Inference Latency Benchmark)
         # ===========================================================================
@@ -296,12 +303,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         with torch.cuda.amp.autocast():
                             _ = self.model(one_sample_x, one_sample_x_mark, dec_inp, one_sample_y_mark)
                     else:
-                        print(one_sample_x.shape, one_sample_x_mark.shape, dec_inp.shape, one_sample_y_mark.shape)
+                        #print(one_sample_x.shape, one_sample_x_mark.shape, dec_inp.shape, one_sample_y_mark.shape)
 
                         _ = self.model(one_sample_x, one_sample_x_mark, dec_inp, one_sample_y_mark)
             
             # 5. 正式测速循环 (运行 100 次取平均)
-            test_interval = 100
+            test_interval = 5000
             latency_list = []
             
             print(f"[Benchmark] Running {test_interval} iterations for stability...")
@@ -416,32 +423,146 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
                 
                 
-                # 绘制注意力图
-                if i == 0 and attns is not None:
-                    # 【修正 1】如果 attns 是 Tensor (单层输出)，手动把它变成列表
-                    # 这样 enumerate 就会只循环 1 次，layer_idx=0
-                    if isinstance(attns, torch.Tensor):
-                        attns = [attns]
+                # 绘制注意力图 1
+                # if i == 0 and attns is not None:
+                #     # 【修正 1】如果 attns 是 Tensor (单层输出)，手动把它变成列表
+                #     # 这样 enumerate 就会只循环 1 次，layer_idx=0
+                #     if isinstance(attns, torch.Tensor):
+                #         attns = [attns]
                         
-                    for layer_idx, attn in enumerate(attns):
-                        # attn shape: [batch_size, num_heads, d_var, d_var]
-                        # 例如 (512, 8, 8, 8)    
-                        # 【修正 2】取第 0 个样本，并在 Head 维度 (dim=0) 上做平均
-                        # attn[0] -> shape [8, 8, 8] (Heads, Var, Var)
-                        # .mean(dim=0) -> shape [8, 8] (Var, Var)
-                        attn_map = attn[2].mean(dim=0).detach().cpu().numpy()
-                        #attn_map = attn[2][1].detach().cpu().numpy()
-                        print(f'Attention map shape (Layer {layer_idx+1}): {attn_map.shape}')
-                        import matplotlib.pyplot as plt
-                        import seaborn as sns # 推荐用 seaborn 画热力图更美观
+                #     for layer_idx, attn in enumerate(attns):
+                #         # attn shape: [batch_size, num_heads, d_var, d_var]
+                #         # 例如 (512, 8, 8, 8)    
+                #         # 【修正 2】取第 0 个样本，并在 Head 维度 (dim=0) 上做平均
+                #         # attn[0] -> shape [8, 8, 8] (Heads, Var, Var)
+                #         # .mean(dim=0) -> shape [8, 8] (Var, Var)
+                #         attn_map = attn[100].mean(dim=0).detach().cpu().numpy()
+                #         #attn_map = attn[2][1].detach().cpu().numpy()
+                #         print(f'Attention map shape (Layer {layer_idx+1}): {attn_map.shape}')
+                #         import matplotlib.pyplot as plt
+                #         import seaborn as sns # 推荐用 seaborn 画热力图更美观
 
-                        plt.figure(figsize=(8, 6))
-                        # 使用 seaborn 可以自动添加数值标注和更好的颜色
-                        # x, y 轴标签可以设为变量名
-                        sns.heatmap(attn_map, cmap='viridis', square=True) 
-                        plt.title(f'Attention Map - Layer {layer_idx+1}')
-                        plt.savefig(os.path.join(folder_path, f'attention_layer_{layer_idx+1}.pdf'))
-                        plt.close()
+                #         plt.figure(figsize=(8, 6))
+                #         # 使用 seaborn 可以自动添加数值标注和更好的颜色
+                #         # x, y 轴标签可以设为变量名
+                #         sns.heatmap(attn_map, cmap='viridis', square=True) 
+                #         plt.title(f'Attention Map - Layer {layer_idx+1}')
+                #         plt.savefig(os.path.join(folder_path, f'attention_layer_{layer_idx+1}.pdf'))
+                #         plt.close()
+
+                #绘制注意力图 2 - 保存所有样本和所有层的注意力图
+                # if i == 0 and attns is not None:
+                #     folder_path=folder_path+'/attention_maps/'
+                #     if not os.path.exists(folder_path): # 1. 确保保存目录存在
+                #         os.makedirs(folder_path)
+
+                #     print(f"Saving all images to: {folder_path}")
+
+                #     for layer_idx, attn in enumerate(attns):
+                #         # attn shape: [batch_size, num_heads, d_var, d_var]
+                #         batch_size = attn.shape[0]
+                        
+                #         print(f'Processing Layer {layer_idx+1} (Batch Size: {batch_size})...')
+
+                #         for sample_idx in range(batch_size):
+                #             # 1. 取出特定样本，并对 Head 维度求平均
+                #             # attn[sample_idx] -> [num_heads, d_var, d_var]
+                #             # .mean(dim=0)     -> [d_var, d_var]
+                #             attn_avg = attn[sample_idx].mean(dim=0).detach().cpu().numpy()
+                            
+                #             # 2. 绘图
+                #             plt.figure(figsize=(8, 6))
+                            
+                #             # 绘制热力图 (建议加上 vmin=0, vmax=1 以固定色标，方便对比)
+                #             sns.heatmap(attn_avg, cmap='viridis', square=True) 
+                            
+                #             # 标题包含层号和样本号
+                #             plt.title(f'Layer {layer_idx+1} - Sample {sample_idx} (Avg Heads)')
+                            
+                #             # 3. 设计文件名 (关键点)
+                #             # 格式: L{层号:02d}_S{样本号:03d}.pdf
+                #             # 02d: 保证 1 变成 01，避免 L1 和 L10 混在一起
+                #             # 03d: 保证样本 5 变成 005，排序更整齐
+                #             filename = f"L{layer_idx+1:02d}_S{sample_idx:03d}_X{true[sample_idx][0][0]}.png"
+                            
+                #             save_path = os.path.join(folder_path, filename)
+                            
+                #             plt.savefig(save_path, bbox_inches='tight')
+                #             plt.close() # 关闭画布，释放内存
+
+                #         print(f"Layer {layer_idx+1} finished.")
+
+                #     print("All done!")
+
+                # 绘制注意力图 3 - 计算并保存全局统计信息和图像
+                # if i == 0 and attns is not None:
+                #     save_dir = os.path.join(folder_path, "Global_Statistics")
+                #     if not os.path.exists(save_dir):
+                #         os.makedirs(save_dir)
+
+                #     print(f"{'Layer':<10} | {'Global Mean':<15} | {'Global Max':<15} | {'Global Min':<15}")
+                #     print("-" * 65)
+
+                #     # 用来存储所有层的平均图，以便最后画一张总览图
+                #     all_layer_avg_maps = []
+
+                #     for layer_idx, attn in enumerate(attns):
+                #         # attn shape: [batch_size, num_heads, d_var, d_var]
+                #         # 例如 (64, 8, 100, 100)
+                        
+                #         # 1. 计算【全局平均注意力图】 (Global Average Attention Map)
+                #         # dim=(0, 1) 表示同时在 Batch(0) 和 Heads(1) 维度上求平均
+                #         # 结果 shape: [d_var, d_var]
+                #         global_avg_map = attn.mean(dim=(0, 1)).detach().cpu().numpy()
+                #         all_layer_avg_maps.append(global_avg_map)
+                        
+                #         # 2. 计算标量统计值
+                #         g_mean = attn.mean().item()
+                #         g_max = attn.max().item()
+                #         g_min = attn.min().item()
+                        
+                #         print(f"Layer {layer_idx+1:<4} | {g_mean:.6f}        | {g_max:.6f}        | {g_min:.6f}")
+                        
+                #         # 3. 绘制单层的全局平均热力图
+                #         plt.figure(figsize=(8, 6))
+                #         # 使用 vmin=0, vmax=0.1 (或更小) 是为了凸显模式，因为平均后数值通常很小
+                #         # 如果图全黑，可以去掉 vmin/vmax 让它自动缩放
+                #         sns.heatmap(global_avg_map, cmap='viridis', square=True)
+                        
+                #         plt.title(f'Layer {layer_idx+1} Global Average Map\n(Avg over {attn.shape[0]} samples & {attn.shape[1]} heads)')
+                #         plt.xlabel('Key Position')
+                #         plt.ylabel('Query Position')
+                        
+                #         filename = f"Layer_{layer_idx+1:02d}_Global_Avg.pdf"
+                #         plt.savefig(os.path.join(save_dir, filename), bbox_inches='tight')
+                #         plt.close()
+
+                #     # 4. (可选) 绘制所有层的总览图 (Subplots)
+                #     # 如果层数很多（如12层），这一步能让你一眼看完所有层的模式变化
+                #     num_layers = len(attns)
+                #     cols = 4
+                #     rows = (num_layers + cols - 1) // cols
+
+                #     fig, axes = plt.subplots(rows, cols, figsize=(4*cols, 3.5*rows))
+                #     axes = axes.flatten()
+
+                #     for i in range(num_layers):
+                #         ax = axes[i]
+                #         sns.heatmap(all_layer_avg_maps[i], cmap='viridis', square=True, ax=ax, cbar=False)
+                #         ax.set_title(f'Layer {i+1}')
+                        
+                #     # 隐藏多余子图
+                #     for i in range(num_layers, len(axes)):
+                #         axes[i].axis('off')
+
+                #     plt.suptitle("Global Average Attention Patterns Across All Layers", fontsize=16)
+                #     plt.tight_layout()
+                #     plt.savefig(os.path.join(save_dir, "All_Layers_Overview.pdf"))
+                #     plt.close()
+
+                #     print(f"\nAll global statistics and images saved to: {save_dir}")
+
+
 
         preds = np.concatenate(preds, axis=0) # 拼接batch结果
         trues = np.concatenate(trues, axis=0)
@@ -450,6 +571,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
         print('test shape:', preds.shape, trues.shape)
 
+        # 计算整个测试集的全局注意力统计信息
+        # self.calculate_global_attention_stats(self.model, test_loader, self.device, folder_path)
 
         # 统计分类任务准确率
         if self.args.data=='UnderWater':
@@ -506,3 +629,134 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         np.save(folder_path + 'true.npy', trues)
 
         return
+    
+
+    def calculate_global_attention_stats(self, model, loader, device, folder_path):
+        """
+        计算整个数据集的全局注意力统计信息（均值、最大值、最小值），并绘制热力图。
+        修复了参数数量不匹配的问题。
+        """
+        print("-" * 30)
+        print("Calculating Global Attention Statistics over the entire dataset...")
+        
+        save_dir = os.path.join(folder_path, "Global_Dataset_Stats")
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+
+        model.eval()
+        
+        # 初始化统计变量
+        total_samples = 0
+        layer_sums = {}     # 存储每层注意力图的累加和 (用于求 Mean)
+        layer_maxs = {}     # 存储每层遇到的全局最大值
+        layer_mins = {}     # 存储每层遇到的全局最小值
+        
+        with torch.no_grad():
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(tqdm.tqdm(loader, desc="Scanning Attention")):
+                batch_x = batch_x.float().to(device)
+                batch_y = batch_y.float().to(device)
+                batch_x_mark = batch_x_mark.float().to(device)
+                batch_y_mark = batch_y_mark.float().to(device)
+
+                # decoder input
+                dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
+                dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(device)
+                
+                # 模型推理
+                if self.args.use_amp:
+                    with torch.cuda.amp.autocast():
+                        outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                else:
+                    outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                
+                # 获取注意力图
+                if isinstance(outputs, tuple):
+                    attns = outputs[1] # list of tensors
+                else:
+                    print("Model did not return attention maps. Skipping stats.")
+                    return
+
+                # 确保 attns 是列表
+                if isinstance(attns, torch.Tensor):
+                    attns = [attns]
+
+                batch_size_current = batch_x.shape[0]
+                total_samples += batch_size_current
+
+                # 遍历每一层
+                for layer_idx, attn in enumerate(attns):
+                    # attn shape: [batch_size, num_heads, L, L]
+                    
+                    # 1. 在 Head 维度平均，保留 Batch 维度用于后续计算
+                    # [batch_size, L, L]
+                    attn_heads_avg = attn.mean(dim=1) 
+                    
+                    # 2. 累加求和 (用于最后算 Global Mean)
+                    # sum(dim=0) -> [L, L]
+                    batch_sum = attn_heads_avg.sum(dim=0).detach().cpu().numpy()
+                    
+                    if layer_idx not in layer_sums:
+                        layer_sums[layer_idx] = batch_sum
+                        # 初始化 max/min
+                        layer_maxs[layer_idx] = attn_heads_avg.max().item()
+                        layer_mins[layer_idx] = attn_heads_avg.min().item()
+                    else:
+                        layer_sums[layer_idx] += batch_sum
+                        # 更新全局 max/min
+                        current_max = attn_heads_avg.max().item()
+                        current_min = attn_heads_avg.min().item()
+                        if current_max > layer_maxs[layer_idx]:
+                            layer_maxs[layer_idx] = current_max
+                        if current_min < layer_mins[layer_idx]:
+                            layer_mins[layer_idx] = current_min
+
+        # --- 所有 Batch 处理完毕，计算最终统计并绘图 ---
+        print(f"\n{'Layer':<10} | {'Dataset Mean':<15} | {'Dataset Max':<15} | {'Dataset Min':<15}")
+        print("-" * 65)
+
+        all_layer_maps = []
+
+        for layer_idx in sorted(layer_sums.keys()):
+            # 计算全局平均图
+            global_avg_map = layer_sums[layer_idx] / total_samples
+            all_layer_maps.append(global_avg_map)
+            
+            # 标量统计
+            g_mean_scalar = np.mean(global_avg_map)
+            g_max_scalar = layer_maxs[layer_idx]
+            g_min_scalar = layer_mins[layer_idx]
+            
+            print(f"Layer {layer_idx+1:<4} | {g_mean_scalar:.6f}        | {g_max_scalar:.6f}        | {g_min_scalar:.6f}")
+
+            # 绘制单层热力图
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(global_avg_map, cmap='viridis', square=True)
+            plt.title(f'Layer {layer_idx+1} Dataset-Global Average\n(Samples: {total_samples})')
+            plt.savefig(os.path.join(save_dir, f"Layer_{layer_idx+1:02d}_Global_Dataset_Avg.pdf"), bbox_inches='tight')
+            plt.close()
+
+        # 绘制所有层总览
+        num_layers = len(all_layer_maps)
+        if num_layers > 0:
+            cols = 4
+            rows = (num_layers + cols - 1) // cols
+            fig, axes = plt.subplots(rows, cols, figsize=(4*cols, 3.5*rows))
+            if isinstance(axes, np.ndarray):
+                axes = axes.flatten()
+            else:
+                axes = [axes] # Handle single subplot case
+
+            for i in range(num_layers):
+                sns.heatmap(all_layer_maps[i], cmap='viridis', square=True, ax=axes[i], cbar=False)
+                axes[i].set_title(f'Layer {i+1}')
+            
+            for i in range(num_layers, len(axes)):
+                axes[i].axis('off')
+
+            plt.suptitle(f"Dataset-Wide Attention Patterns (N={total_samples})", fontsize=16)
+            plt.tight_layout()
+            plt.savefig(os.path.join(save_dir, "All_Layers_Global_Overview.pdf"))
+            plt.close()
+            
+        print(f"Global statistics saved to: {save_dir}")
+        print("-" * 30)

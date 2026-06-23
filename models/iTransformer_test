@@ -1,0 +1,186 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from layers.Transformer_EncDec import Encoder, EncoderLayer
+from layers.SelfAttention_Family import FullAttention, AttentionLayer
+from layers.Embed import DataEmbedding_inverted, PositionalEmbedding
+import numpy as np
+import logging
+
+
+class ImprovedDataEmbedding_inverted(nn.Module):
+    """
+    改进的倒置嵌入：添加变体位置嵌入和可选的时间嵌入增强
+    """
+    def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
+        super(ImprovedDataEmbedding_inverted, self).__init__()
+        self.value_embedding = nn.Linear(c_in, d_model)
+        # 添加变体位置嵌入
+        self.variable_position_embedding = PositionalEmbedding(d_model=d_model, max_len=100)  # 假设最多100个变体
+        # 时间嵌入（如果需要）
+        if embed_type != 'timeF':
+            self.temporal_embedding = nn.Linear(c_in, d_model)  # 简单的线性时间嵌入
+        else:
+            self.temporal_embedding = None
+        self.dropout = nn.Dropout(p=dropout)
+        self.activation = nn.ReLU()  # 添加激活函数
+
+    def forward(self, x, x_mark):
+        x = x.permute(0, 2, 1)
+        # x: [Batch Variate Time]
+        if x_mark is None:
+            x = self.value_embedding(x)
+        else:
+            x = self.value_embedding(x)
+            if self.temporal_embedding is not None:
+                # 增强时间嵌入
+                temp_embed = self.temporal_embedding(x_mark.permute(0, 2, 1))
+                x = x + temp_embed
+
+        # 添加变体位置嵌入
+        var_pos = self.variable_position_embedding(x.permute(0, 2, 1))  # [Batch, Time, d_model]
+        x = x + var_pos.permute(0, 2, 1)  # 调整维度
+
+        # 应用激活和dropout
+        x = self.activation(x)
+        return self.dropout(x)
+
+
+class ImprovediTransformer(nn.Module):
+    """
+    改进的iTransformer模型：使用增强的embedding
+    Paper link: https://arxiv.org/abs/2310.06625
+    """
+
+    def __init__(self, configs):
+        super(ImprovediTransformer, self).__init__()
+        self.task_name = configs.task_name
+        self.seq_len = configs.seq_len
+        self.pred_len = configs.pred_len
+        # 使用改进的Embedding
+        self.enc_embedding = ImprovedDataEmbedding_inverted(configs.seq_len, configs.d_model, configs.embed, configs.freq,
+                                                    configs.dropout)
+        # Encoder
+        self.encoder = Encoder(
+            [
+                EncoderLayer(
+                    AttentionLayer(
+                        FullAttention(False, configs.factor, attention_dropout=configs.dropout,
+                                      output_attention=True), configs.d_model, configs.n_heads),
+                    configs.d_model,
+                    configs.d_ff,
+                    dropout=configs.dropout,
+                    activation=configs.activation
+
+                ) for l in range(configs.e_layers)
+            ],
+            norm_layer=torch.nn.LayerNorm(configs.d_model)
+        )
+        # Decoder
+        if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
+            self.projection = nn.Linear(configs.d_model, configs.pred_len, bias=True)
+        if self.task_name == 'imputation':
+            self.projection = nn.Linear(configs.d_model, configs.seq_len, bias=True)
+        if self.task_name == 'anomaly_detection':
+            self.projection = nn.Linear(configs.d_model, configs.seq_len, bias=True)
+        if self.task_name == 'classification':
+            self.act = F.gelu
+            self.dropout = nn.Dropout(configs.dropout)
+            self.projection = nn.Linear(configs.d_model * configs.enc_in, configs.num_class)
+
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        # Normalization from Non-stationary Transformer
+        x_mark_enc = None  # 不使用x_mark_dec
+
+        if x_mark_enc is not None:
+            logging.debug("x_mark_enc:" + str(x_mark_enc.shape))
+        else:
+            logging.debug("x_mark_enc is None")
+        means = x_enc.mean(1, keepdim=True).detach()
+        x_enc = x_enc - means
+        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        x_enc /= stdev
+
+        _, _, N = x_enc.shape
+
+        # Embedding
+        logging.debug("x_enc:" + str(x_enc.shape))
+        enc_out = self.enc_embedding(x_enc, x_mark_enc)
+        logging.debug("embedding shape:" + str(enc_out.shape))
+        enc_out, attns = self.encoder(enc_out, attn_mask=None)
+        logging.debug("encoder shape:" + str(enc_out.shape))
+        dec_out = self.projection(enc_out).permute(0, 2, 1)[:, :, :N]
+        logging.debug("decoder shape:" + str(dec_out.shape))
+        logging.debug("1:" + str(dec_out[0, 0, :-1]))
+        # De-Normalization from Non-stationary Transformer
+        # dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+        # dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+        logging.debug("2:" + str(dec_out[0, 0, :-1]))
+        logging.debug("final shape:" + str(dec_out.shape))
+        return dec_out, attns  # 增加返回注意力图
+
+    def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):
+        # Normalization from Non-stationary Transformer
+        means = x_enc.mean(1, keepdim=True).detach()
+        x_enc = x_enc - means
+        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        x_enc /= stdev
+
+        _, L, N = x_enc.shape
+
+        # Embedding
+        enc_out = self.enc_embedding(x_enc, x_mark_enc)
+        enc_out, attns = self.encoder(enc_out, attn_mask=None)
+
+        dec_out = self.projection(enc_out).permute(0, 2, 1)[:, :, :N]
+
+        # De-Normalization from Non-stationary Transformer
+        dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, L, 1))
+        dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, L, 1))
+        return dec_out
+
+    def anomaly_detection(self, x_enc):
+        # Normalization from Non-stationary Transformer
+        means = x_enc.mean(1, keepdim=True).detach()
+        x_enc = x_enc - means
+        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        x_enc /= stdev
+
+        _, L, N = x_enc.shape
+
+        # Embedding
+        enc_out = self.enc_embedding(x_enc, None)
+        enc_out, attns = self.encoder(enc_out, attn_mask=None)
+
+        dec_out = self.projection(enc_out).permute(0, 2, 1)[:, :, :N]
+        # De-Normalization from Non-stationary Transformer
+        dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, L, 1))
+        dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, L, 1))
+        return dec_out
+
+    def classification(self, x_enc, x_mark_enc):
+        # Embedding
+        enc_out = self.enc_embedding(x_enc, None)
+        enc_out, attns = self.encoder(enc_out, attn_mask=None)
+
+        # Output
+        output = self.act(enc_out)  # the output transformer encoder/decoder embeddings don't include non-linearity
+        output = self.dropout(output)
+        output = output.reshape(output.shape[0], -1)  # (batch_size, c_in * d_model)
+        output = self.projection(output)  # (batch_size, num_classes)
+        return output
+
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+        if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
+            dec_out, attns = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            return dec_out[:, -self.pred_len:, :], attns  # [B, L, D]
+        if self.task_name == 'imputation':
+            dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
+            return dec_out  # [B, L, D]
+        if self.task_name == 'anomaly_detection':
+            dec_out = self.anomaly_detection(x_enc)
+            return dec_out  # [B, L, D]
+        if self.task_name == 'classification':
+            dec_out = self.classification(x_enc, x_mark_enc)
+            return dec_out  # [B, N]
+        return None
